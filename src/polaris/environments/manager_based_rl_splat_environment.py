@@ -11,8 +11,25 @@ from isaacsim.core.prims import GeometryPrim
 from isaacsim.core.utils.stage import get_current_stage
 from pxr import Semantics
 
-from polaris.splat_renderer import SplatRenderer
 from polaris.environments.rubrics import Rubric
+
+
+def _select_splat_renderer_cls():
+    """Pick the SplatRenderer class at runtime.
+
+    POLARIS_RENDERER=surfel  -> upstream PolaRiS SplatRenderer (2DGS surfel
+                                rasterizer, untouched legacy code path).
+    POLARIS_RENDERER=gsplat  -> 3DGS SplatRenderer using the gsplat backend
+                                (default; matches Marble + SAM3D PLYs).
+    """
+    backend = os.environ.get("POLARIS_RENDERER", "gsplat").lower()
+    if backend in ("gsplat", "3dgs"):
+        from polaris.splat_renderer.gsplat_renderer import SplatRenderer
+    elif backend in ("surfel", "2dgs"):
+        from polaris.splat_renderer import SplatRenderer  # legacy
+    else:
+        raise ValueError(f"Unknown POLARIS_RENDERER: {backend!r}")
+    return SplatRenderer
 
 
 class ManagerBasedRLSplatEnv(ManagerBasedRLEnv):
@@ -192,7 +209,7 @@ class ManagerBasedRLSplatEnv(ManagerBasedRLEnv):
                 "fovx": fovx,
                 "fovy": fovy,
             }
-        self.splat_renderer = SplatRenderer(splats=splats, device=self.device)
+        self.splat_renderer = _select_splat_renderer_cls()(splats=splats, device=self.device)
         self.splat_renderer.init_cameras(camera_cfg)
 
     def setup_splat_robot(self):

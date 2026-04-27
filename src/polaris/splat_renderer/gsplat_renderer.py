@@ -112,3 +112,151 @@ def render(
         "surf_normal": zeros_3hw,
     }
     return rets
+
+
+# ---------------------------------------------------------------------------
+# SplatRenderer (gsplat backend)
+#
+# Mirrors the legacy SplatRenderer interface (init_cameras / add_splats /
+# transform_many / render / render_raw) but uses the gsplat-based `render`
+# defined above and loads 3DGS PLYs (3 scale dims, expected from Marble
+# background + SAM-3D-Objects rigid splats). 2DGS PLYs (PolaRiS-Hub stock
+# scenes) are rejected here on purpose — point those at the legacy
+# `polaris.splat_renderer.SplatRenderer` instead.
+# ---------------------------------------------------------------------------
+import numpy as np
+
+import polaris.utils as utils
+from polaris.splat_renderer.scene.cameras import Camera
+
+
+class _DummyPipe:
+    convert_SHs_python = False
+    compute_cov3D_python = False
+    depth_ratio = 0.0
+    debug = False
+
+
+class SplatRenderer:
+    """3DGS / gsplat-backed renderer with the legacy SplatRenderer API."""
+
+    def __init__(self, splats, bg_color=(0.5, 0.5, 0.5), device=0):
+        self.device = device
+        self.bg_color = torch.tensor(list(bg_color), device=self.device).float()
+        self.pcds = dict(splats)
+        self.splat_mapping: dict[str, tuple[int, int]] = {}
+        self.pipe = _DummyPipe()
+
+        # One big GaussianModel that all sub-splats are concatenated into.
+        # Always sh_degree=3 to match the legacy SplatRenderer.
+        self.big_model = GaussianModel(3)
+        self.original_big_model = GaussianModel(3)
+        self._init_models()
+        n = self.big_model.get_xyz.shape[0]
+        sh = self.big_model.active_sh_degree
+        print(f"[gsplat-renderer] loaded {len(self.pcds)} splats, {n} gaussians, sh_degree={sh}")
+
+    # ---- camera setup --------------------------------------------------------
+    def init_cameras(self, cam_dict):
+        self.cameras = {}
+        for name, p in cam_dict.items():
+            self.cameras[name] = Camera(
+                colmap_id=0,
+                R=np.eye(3),
+                T=np.array([0.0, 0.0, 0.0]),
+                FoVy=p["fovy"],
+                FoVx=p["fovx"],
+                image=torch.zeros(3, p["res"][0], p["res"][1]),
+                gt_alpha_mask=None,
+                image_name="test",
+                uid=0,
+                data_device=self.device,
+            )
+
+    # ---- model init / append -------------------------------------------------
+    def _init_models(self):
+        empty_attrs = ("_xyz", "_rotation", "_opacity", "_features_rest", "_features_dc", "_scaling")
+        for a in empty_attrs:
+            setattr(self.big_model, a, getattr(self.big_model, a).to(self.device))
+        for name, ply_path in self.pcds.items():
+            self._append_one(name, ply_path)
+        self._snapshot_original()
+
+    def _append_one(self, name, ply_path):
+        m = GaussianModel(3)
+        m.load_ply(str(ply_path))
+        # Reject 2DGS surfel PLYs (only 2 scale dims) — gsplat backend
+        # requires full 3D anisotropic Gaussians.
+        if m._scaling.shape[-1] != 3:
+            raise ValueError(
+                f"{ply_path}: gsplat SplatRenderer requires 3DGS PLYs "
+                f"(scale dim 3); got dim {m._scaling.shape[-1]}. Use the "
+                f"legacy `polaris.splat_renderer.SplatRenderer` for 2DGS."
+            )
+        cur = self.big_model._xyz.shape[0]
+        self.splat_mapping[name] = (cur, cur + m._xyz.shape[0])
+        for a in ("_xyz", "_rotation", "_opacity", "_features_rest", "_features_dc", "_scaling"):
+            cat = torch.cat([getattr(self.big_model, a), getattr(m, a).to(self.device)], dim=0)
+            setattr(self.big_model, a, cat.requires_grad_())
+
+    def _snapshot_original(self):
+        for a in ("_xyz", "_rotation", "_opacity", "_features_rest", "_features_dc", "_scaling"):
+            setattr(self.original_big_model, a, getattr(self.big_model, a).clone())
+
+    def add_splats(self, splats):
+        for name, ply_path in splats.items():
+            self._append_one(name, ply_path)
+            self.pcds[name] = ply_path
+        self._snapshot_original()
+
+    # ---- per-step transforms -------------------------------------------------
+    def transform_many(self, all_transforms):
+        with torch.no_grad():
+            indices, xyzs, rots, frest = [], [], [], []
+            for name, (translate, rotate) in all_transforms.items():
+                translate = translate.to(self.device)
+                rotate = rotate.to(self.device)
+                start, end = self.splat_mapping[name]
+                xyzs.append(
+                    utils.rotate_vector_by_quaternion(
+                        rotate, self.original_big_model._xyz[start:end]
+                    ) + translate
+                )
+                rots.append(
+                    utils.multiply_quaternions(
+                        rotate, self.original_big_model._rotation[start:end]
+                    )
+                )
+                frest.append(self.original_big_model._features_rest[start:end])
+                indices.append(torch.arange(start, end))
+            if not indices:
+                return
+            indices = torch.cat(indices).to(self.device)
+            self.big_model._xyz[indices] = torch.cat(xyzs)
+            self.big_model._rotation[indices] = torch.cat(rots)
+            self.big_model._features_rest[indices] = torch.cat(frest)
+
+    # ---- rasterization -------------------------------------------------------
+    def _render_one(self, cam):
+        return render(cam, self.big_model, self.pipe, self.bg_color)
+
+    def render_raw(self, extrinsics_dict):
+        images = {}
+        for name in self.cameras:
+            if name in extrinsics_dict:
+                self.cameras[name].set_extrinsics(
+                    extrinsics_dict[name]["rot"], extrinsics_dict[name]["pos"]
+                )
+                images[name] = self._render_one(self.cameras[name])["render"].permute(1, 2, 0).clone()
+        return images
+
+    def render(self, extrinsics_dict):
+        # Match legacy axis-permutation so cam frames stay consistent.
+        p_mat = np.array([[0, 0, 1], [-1, 0, 0], [0, -1, 0]])
+        images = {}
+        for name in self.cameras:
+            if name in extrinsics_dict:
+                cam_r = extrinsics_dict[name]["rot"] @ p_mat
+                self.cameras[name].set_extrinsics(cam_r, extrinsics_dict[name]["pos"])
+            images[name] = self._render_one(self.cameras[name])["render"].permute(1, 2, 0).clone()
+        return images

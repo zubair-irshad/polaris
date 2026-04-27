@@ -1,31 +1,8 @@
-import os
 import torch
 import numpy as np
 import polaris.utils as utils
-from polaris.splat_renderer.gaussian_renderer import GaussianModel
-from polaris.splat_renderer.gaussian_renderer import render as render_surfel
+from polaris.splat_renderer.gaussian_renderer import GaussianModel, render
 from polaris.splat_renderer.scene.cameras import Camera
-
-
-def _select_render_fn(backend: str | None = None):
-    """Pick the splat rasterization backend.
-
-    Default is the 3DGS gsplat backend, since manipverse pipelines (Marble
-    background, SAM-3D-Objects rigid splats) ship 3DGS PLYs and the legacy
-    surfel rasterizer drops one scale axis. Set POLARIS_RENDERER=surfel to
-    fall back to the original diff-surfel-rasterization path.
-    """
-    name = (backend or os.environ.get("POLARIS_RENDERER", "gsplat")).lower()
-    if name in ("gsplat", "3dgs"):
-        from polaris.splat_renderer.gsplat_renderer import render as render_gsplat
-        return render_gsplat
-    if name in ("surfel", "2dgs", "diff_surfel"):
-        return render_surfel
-    raise ValueError(f"Unknown POLARIS_RENDERER backend: {name!r}")
-
-
-# Module-level kept for backwards compatibility with any external callers.
-render = _select_render_fn()
 
 
 class DummyPipe:
@@ -36,7 +13,7 @@ class DummyPipe:
 
 
 class SplatRenderer:
-    def __init__(self, splats, bg_color=[0.5, 0.5, 0.5], device=0, backend: str | None = None):
+    def __init__(self, splats, bg_color=[0.5, 0.5, 0.5], device=0):
         # self.bg_color = bg_color
         self.device = device
         self.bg_color = torch.tensor(bg_color).to(self.device).float()
@@ -49,8 +26,6 @@ class SplatRenderer:
         print("Finished loading models!")
 
         self.pipe = DummyPipe()
-        self._render_fn = _select_render_fn(backend)
-        print(f"[SplatRenderer] backend = {self._render_fn.__module__.split('.')[-1]}")
         # self.cameras = self.init_cams(fovx=fovx, fovy=fovy, res=res)
 
     def render_raw(self, extrinsics_dict):
@@ -62,7 +37,7 @@ class SplatRenderer:
 
                 self.cameras[name].set_extrinsics(cam_r, cam_t)
 
-                render_pkg = self._render_fn(
+                render_pkg = render(
                     self.cameras[name], self.big_model, self.pipe, self.bg_color
                 )
                 image = render_pkg["render"]
@@ -92,7 +67,7 @@ class SplatRenderer:
 
                 self.cameras[name].set_extrinsics(cam_r, cam_t)
 
-            render_pkg = self._render_fn(
+            render_pkg = render(
                 self.cameras[name], self.big_model, self.pipe, self.bg_color
             )
             image = render_pkg["render"]

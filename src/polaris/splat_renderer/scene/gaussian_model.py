@@ -291,18 +291,12 @@ class GaussianModel:
             (features_extra.shape[0], 3, (self.max_sh_degree + 1) ** 2 - 1)
         )
 
-        # Load all scale dims present in the PLY.
-        # 3DGS (Marble / SAM-3D-Objects / vanilla 3DGS) writes scale_0/1/2.
-        # 2DGS / surfel splats write scale_0/1.
-        # The legacy surfel renderer expects 2 scale dims and pads to 3 inside
-        # build_covariance_from_scaling_rotation; the gsplat 3DGS renderer
-        # expects 3. Keep whatever is on disk and let the renderer adapt.
         scale_names = [
             p.name
             for p in plydata.elements[0].properties
             if p.name.startswith("scale_")
         ]
-        scale_names = sorted(scale_names, key=lambda x: int(x.split("_")[-1]))
+        scale_names = sorted(scale_names, key=lambda x: int(x.split("_")[-1]))[:2]
         scales = np.zeros((xyz.shape[0], len(scale_names)))
         for idx, attr_name in enumerate(scale_names):
             scales[:, idx] = np.asarray(plydata.elements[0][attr_name])

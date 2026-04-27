@@ -90,13 +90,7 @@ def render(
             .reshape(-1, 9)
         )  # column major
     else:
-        # The surfel rasterizer (diff-surfel-rasterization, 2DGS) expects 2D
-        # scales per Gaussian. PLYs from Marble / SAM-3D-Objects ship with
-        # 3D scales — drop the smallest axis so the surfel path still works
-        # for back-compat. Prefer the gsplat 3DGS backend for 3DGS inputs.
         scales = pc.get_scaling
-        if scales.shape[-1] >= 3:
-            scales = scales[..., :2]
         rotations = pc.get_rotation
 
     # If precomputed colors are provided, use them. Otherwise, if it is desired to precompute colors
