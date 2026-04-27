@@ -15,6 +15,7 @@ dependencies = [
     "tyro>=0.9.17",
     "diff-surfel-rasterization",
     "simple-knn",
+    "gsplat>=1.4.0",
     "openpi-client",
     #"torch>=2.9.0", # Change here for different CUDA version
     #"torchvision>=0.24.0", # Change here for different CUDA version

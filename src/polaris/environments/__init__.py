@@ -1,3 +1,4 @@
+import os
 import gymnasium as gym
 from polaris.environments.manager_based_rl_splat_environment import (
     ManagerBasedRLSplatEnv,
@@ -116,6 +117,32 @@ gym.register(
         ),
     },
 )
+
+# =============================================================================
+# ManipVerse scenes
+# =============================================================================
+# Assembled via the manipverse pipeline (stage 07). Asset path is read from
+# the MANIPVERSE_SCENE0_USD env var so it stays out of source control. The
+# rubric is intentionally empty for now — we register the env primarily for
+# rendering / sysid validation while we settle the gsplat 3DGS backend.
+
+_manipverse_scene0 = os.environ.get(
+    "MANIPVERSE_SCENE0_USD",
+    str(DATA_PATH / "manipverse_scene0/scene.usda"),
+)
+
+gym.register(
+    id="DROID-ManipVerse-Scene0",
+    entry_point=ManagerBasedRLSplatEnv,
+    disable_env_checker=True,
+    order_enforce=False,
+    kwargs={
+        "env_cfg_entry_point": DroidCfg,
+        "usd_file": _manipverse_scene0,
+        "rubric": Rubric(criteria=[]),
+    },
+)
+
 
 gym.register(
     id="DROID-TapeIntoContainer",

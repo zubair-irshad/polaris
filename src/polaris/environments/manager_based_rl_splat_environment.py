@@ -1,3 +1,4 @@
+import os
 import torch
 import cv2
 from pathlib import Path
@@ -27,13 +28,27 @@ class ManagerBasedRLSplatEnv(ManagerBasedRLEnv):
         **kwargs,
     ):
         # do dynamic setup here maybe
+        # Honor POLARIS_ROBOT_SPLAT=0 to swap in the synthetic USD robot,
+        # which is what we want while the splat-robot asset is still 2DGS.
+        env_robot_splat = os.environ.get("POLARIS_ROBOT_SPLAT")
+        if env_robot_splat is None:
+            self._use_robot_splat = bool(kwargs.pop("robot_splat", True))
+        else:
+            self._use_robot_splat = env_robot_splat not in ("0", "false", "False")
+            kwargs.pop("robot_splat", None)
         if usd_file is not None:
             self.usd_file = usd_file
-            cfg.dynamic_setup(usd_file)
+            cfg.dynamic_setup(usd_file, robot_splat=self._use_robot_splat)
 
         super().__init__(cfg=cfg, *args, **kwargs)
         self.setup_splat_world_and_robot_views()
-        self.setup_splat_robot()
+        # Only build a splat representation of the robot if the cfg requested
+        # robot_splat=True via dynamic_setup. With the synthetic USD robot
+        # (the path we recommend while validating the gsplat 3DGS backend),
+        # the rasterizer composites the simulator-rendered robot pixels using
+        # the semantic mask in custom_render() — no robot splat needed.
+        if getattr(self, "_use_robot_splat", True):
+            self.setup_splat_robot()
         self.rubric = rubric
 
     def _evaluate_rubric(self) -> dict:
