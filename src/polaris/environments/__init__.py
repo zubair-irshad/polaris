@@ -126,9 +126,12 @@ gym.register(
 # rubric is intentionally empty for now — we register the env primarily for
 # rendering / sysid validation while we settle the gsplat 3DGS backend.
 
+# Default to PolaRiS-Hub/droid_manipverse_scene0/scene.usda — same layout
+# convention as the other registered scenes. Override with
+# MANIPVERSE_SCENE0_USD if the asset lives elsewhere.
 _manipverse_scene0 = os.environ.get(
     "MANIPVERSE_SCENE0_USD",
-    str(DATA_PATH / "manipverse_scene0/scene.usda"),
+    str(DATA_PATH / "droid_manipverse_scene0/scene.usda"),
 )
 
 gym.register(
