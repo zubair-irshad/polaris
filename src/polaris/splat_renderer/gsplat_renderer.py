@@ -196,8 +196,14 @@ class SplatRenderer:
         # the transpose to recover the standard 4x4 world->cam viewmat.
         return cam.world_view_transform.T.contiguous().to(self.device).float()
 
-    def _render_one(self, cam: Camera) -> torch.Tensor:
-        """Returns RGB tensor of shape [H, W, 3] in [0,1]."""
+    def _rasterize(self, cam: Camera, with_depth: bool):
+        """Run gsplat ``rasterization`` once.
+
+        Returns a tuple ``(rendered, alpha)`` where ``rendered`` is
+        ``[1, H, W, 3]`` for RGB-only or ``[1, H, W, 4]`` (RGB + expected
+        depth in the last channel) when ``with_depth=True``, and ``alpha``
+        is whatever shape gsplat hands back (handled in callers).
+        """
         W, H = int(cam.image_width), int(cam.image_height)
         K = self._intrinsics_K(cam)
         V = self._viewmat(cam)
@@ -213,14 +219,39 @@ class SplatRenderer:
             viewmats=V[None],
             Ks=K[None],
             width=W, height=H,
-            render_mode="RGB",
+            render_mode="RGB+ED" if with_depth else "RGB",
             packed=False,
         )
-        rgb = rendered[0, ..., :3]                 # [H, W, 3]
-        a   = alpha[0, ..., 0:1] if alpha.dim() == 4 else alpha[0]   # [H, W, 1]
+        return rendered, alpha
+
+    @staticmethod
+    def _alpha_hw1(alpha: torch.Tensor) -> torch.Tensor:
+        """Return alpha as ``[H, W, 1]`` regardless of gsplat's output shape."""
+        if alpha.dim() == 4:                       # [1, H, W, 1]
+            return alpha[0, ..., 0:1]
+        if alpha.dim() == 3 and alpha.shape[-1] == 1:  # [H, W, 1]
+            return alpha
+        if alpha.dim() == 3:                       # [1, H, W]
+            return alpha[0].unsqueeze(-1)
+        return alpha.unsqueeze(-1)                 # [H, W]
+
+    def _render_one(self, cam: Camera) -> torch.Tensor:
+        """Returns RGB tensor of shape [H, W, 3] in [0,1]."""
+        rendered, alpha = self._rasterize(cam, with_depth=False)
+        rgb = rendered[0, ..., :3]                                 # [H, W, 3]
+        a = self._alpha_hw1(alpha)                                 # [H, W, 1]
         # Composite background manually (gsplat 1.4 / 1.5 API agnostic).
         rgb = rgb + (1.0 - a) * self.bg_color.view(1, 1, 3)
         return rgb.clamp(0.0, 1.0)
+
+    def _render_one_rgbd(self, cam: Camera) -> dict:
+        """Returns dict with rgb [H,W,3], depth [H,W], alpha [H,W] (all float32)."""
+        rendered, alpha = self._rasterize(cam, with_depth=True)
+        rgb_raw = rendered[0, ..., :3]                             # [H, W, 3]
+        depth = rendered[0, ..., 3]                                # [H, W] expected depth
+        a = self._alpha_hw1(alpha)                                 # [H, W, 1]
+        rgb = (rgb_raw + (1.0 - a) * self.bg_color.view(1, 1, 3)).clamp(0.0, 1.0)
+        return {"rgb": rgb, "depth": depth, "alpha": a.squeeze(-1)}
 
     def render_raw(self, extrinsics_dict: dict):
         images = {}
@@ -243,3 +274,29 @@ class SplatRenderer:
                 self.cameras[name].set_extrinsics(cam_r, extrinsics_dict[name]["pos"])
             images[name] = self._render_one(self.cameras[name]).clone()
         return images
+
+    def render_rgbd(self, extrinsics_dict):
+        """Render RGB + metric depth (+ alpha) for the requested cameras only.
+
+        Unlike :meth:`render`, this does not apply the half-res
+        downsample/upsample trick and only renders cameras that appear in
+        ``extrinsics_dict`` (so it's cheap when you just need one cam, e.g.
+        an orbit flythrough).
+
+        Returns
+        -------
+        dict[name, dict] with float32 torch tensors on ``self.device``:
+            ``rgb``   - ``[H, W, 3]`` in ``[0, 1]``
+            ``depth`` - ``[H, W]`` expected metric depth (gsplat ``RGB+ED``)
+            ``alpha`` - ``[H, W]`` splat coverage in ``[0, 1]``
+        """
+        p_mat = np.array([[0, 0, 1], [-1, 0, 0], [0, -1, 0]])
+        out = {}
+        for name, ext in extrinsics_dict.items():
+            if name not in self.cameras:
+                continue
+            cam_r = ext["rot"] @ p_mat
+            self.cameras[name].set_extrinsics(cam_r, ext["pos"])
+            d = self._render_one_rgbd(self.cameras[name])
+            out[name] = {k: v.clone() for k, v in d.items()}
+        return out

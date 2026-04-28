@@ -1,3 +1,4 @@
+import os
 import torch
 from pathlib import Path
 from isaaclab.envs.mdp.actions.actions_cfg import BinaryJointPositionActionCfg
@@ -54,6 +55,33 @@ class FixedCamera(Camera):
         )
 
 
+def _make_dome_light_spawn():
+    """Build the ambient dome light spawn cfg.
+
+    The splat BG already bakes in scene illumination, but with
+    POLARIS_ROBOT_SPLAT=0 the robot is raytraced by IsaacSim and composited
+    onto the splat via the semantic mask. So this dome (plus the SphereLight
+    key-light below) only re-lights the robot and any raytraced rigid USD
+    props. A flat dome at intensity=1000 produced the "gray plastic" robot;
+    matching RoboLab / sim-evals we keep the dome dim and let the sphere
+    light carry the directional highlight.
+
+    Set POLARIS_HDRI_PATH=/abs/path/to/scene.hdr to swap the uniform dome for
+    an HDRI dome (use Poly Haven workshop / studio HDRIs for DROID-style
+    scenes). HDRI is invisible in primary rays so it doesn't fight the splat
+    BG visually, only contributes to lighting/reflections on the robot.
+    """
+    hdri_path = os.environ.get("POLARIS_HDRI_PATH", "").strip()
+    if hdri_path and Path(hdri_path).exists():
+        return sim_utils.DomeLightCfg(
+            intensity=300.0,
+            texture_file=hdri_path,
+            texture_format="latlong",
+            visible_in_primary_ray=False,
+        )
+    return sim_utils.DomeLightCfg(intensity=800.0, visible_in_primary_ray=False)
+
+
 ### SceneCfg ###
 @configclass
 class SceneCfg(InteractiveSceneCfg):
@@ -66,7 +94,7 @@ class SceneCfg(InteractiveSceneCfg):
         prim_path="{ENV_REGEX_NS}/robot/Gripper/Robotiq_2F_85/base_link/wrist_cam",
         height=720,
         width=1280,
-        data_types=["rgb", "semantic_segmentation"],
+        data_types=["rgb", "semantic_segmentation", "distance_to_image_plane", "normals"],
         colorize_semantic_segmentation=False,
         update_latest_camera_pose=True,
         spawn=sim_utils.PinholeCameraCfg(
@@ -82,9 +110,20 @@ class SceneCfg(InteractiveSceneCfg):
         ),
     )
 
+    # --- Lighting (see _make_dome_light_spawn below) ----------------------
+    key_light = AssetBaseCfg(
+        prim_path="/World/key_light",
+        spawn=sim_utils.SphereLightCfg(
+            intensity=5000.0,
+            radius=0.2,
+            color=(1.0, 0.98, 0.95),
+        ),
+        init_state=AssetBaseCfg.InitialStateCfg(pos=(0.4, -0.6, 1.2)),
+    )
+
     sphere_light = AssetBaseCfg(
-        prim_path="/World/biglight",
-        spawn=sim_utils.DomeLightCfg(intensity=1000),
+        prim_path="/World/dome_light",
+        spawn=_make_dome_light_spawn(),
     )
 
     def __post_init__(
@@ -144,8 +183,14 @@ class SceneCfg(InteractiveSceneCfg):
                     prim_path=f"{{ENV_REGEX_NS}}/scene/{name}",
                     height=720,
                     width=1280,
-                    data_types=["rgb", "semantic_segmentation"],
+                    data_types=[
+                        "rgb",
+                        "semantic_segmentation",
+                        "distance_to_image_plane",
+                        "normals",
+                    ],
                     colorize_semantic_segmentation=False,
+                    update_latest_camera_pose=True,
                     spawn=None,
                     offset=CameraCfg.OffsetCfg(pos=pos, rot=rot, convention="opengl"),
                 )
@@ -174,8 +219,14 @@ class SceneCfg(InteractiveSceneCfg):
                 prim_path="{ENV_REGEX_NS}/scene/external_cam",
                 height=720,
                 width=1280,
-                data_types=["rgb", "semantic_segmentation"],
+                data_types=[
+                    "rgb",
+                    "semantic_segmentation",
+                    "distance_to_image_plane",
+                    "normals",
+                ],
                 colorize_semantic_segmentation=False,
+                update_latest_camera_pose=True,
                 spawn=sim_utils.PinholeCameraCfg(
                     focal_length=1.0476,
                     horizontal_aperture=2.5452,
