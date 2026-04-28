@@ -55,7 +55,9 @@ class ManagerBasedRLSplatEnv(ManagerBasedRLEnv):
             kwargs.pop("robot_splat", None)
         if usd_file is not None:
             self.usd_file = usd_file
-            cfg.dynamic_setup(usd_file, robot_splat=self._use_robot_splat)
+            # EnvCfg.dynamic_setup forwards *args positionally to SceneCfg —
+            # no kwargs accepted, so pass robot_splat by position.
+            cfg.dynamic_setup(usd_file, self._use_robot_splat)
 
         super().__init__(cfg=cfg, *args, **kwargs)
         self.setup_splat_world_and_robot_views()
