@@ -14,10 +14,14 @@ Usage (on the SSH GPU box, after ``uv sync``):
     export POLARIS_RENDERER=gsplat
     # Optional: HDRI to relight the raytraced robot pixels
     export POLARIS_HDRI_PATH=/abs/path/to/some_workshop.hdr
+    # Optional VRAM knobs (read in droid_cfg.py at env construction):
+    export POLARIS_CAM_WIDTH=640 POLARIS_CAM_HEIGHT=360   # half-res
+    export POLARIS_CAM_DEPTH=0 POLARIS_CAM_NORMALS=0      # drop G-buffers
     python experiments/manipverse_orbit_capture.py \
         --save-dir orbit_scene0 \
-        --frames 240 --radius 1.4 --height 0.9 \
-        --center 0.0 0.0 0.3
+        --frames 240 --radius 0.9 --height 0.6 \
+        --center 0.0 0.0 0.4 \
+        --no-splat-depth                                  # skip 2nd splat pass
 
 Outputs (under --save-dir):
     rgb/frame_XXXXXX.png       composited RGB (splat BG + raytraced robot)
@@ -41,13 +45,13 @@ parser.add_argument("--save-dir", default="orbit_scene0")
 parser.add_argument("--external-cam", default="cam__22008760")
 parser.add_argument("--env-id", default="DROID-ManipVerse-Scene0")
 parser.add_argument("--frames", type=int, default=240, help="Total frames in the orbit.")
-parser.add_argument("--radius", type=float, default=1.4, help="Final orbit radius (m).")
-parser.add_argument("--height", type=float, default=0.9, help="Camera height above center (m).")
+parser.add_argument("--radius", type=float, default=0.9, help="Final orbit radius (m).")
+parser.add_argument("--height", type=float, default=0.6, help="Camera height above center (m).")
 parser.add_argument(
     "--center",
     type=float,
     nargs=3,
-    default=[0.0, 0.0, 0.3],
+    default=[0.0, 0.0, 0.4],
     help="Look-at target xyz (world meters). Tune to your table center.",
 )
 parser.add_argument(
@@ -55,6 +59,13 @@ parser.add_argument(
     type=int,
     default=30,
     help="Frames to ease from radius*1.4 down to --radius at the start.",
+)
+parser.add_argument(
+    "--no-splat-depth",
+    action="store_true",
+    help="Skip the second splat rasterization that produces BG depth. "
+         "Halves splat memory + time per frame; depth/PNG falls back to "
+         "raytraced (robot-only) sim depth.",
 )
 parser.add_argument(
     "--up-axis",
@@ -279,7 +290,14 @@ def main():
         # camera extrinsics this frame, so re-rendering rgbd here picks up
         # the same orbit pose. This is a second splat rasterization per
         # frame — fine for a flythrough, would be wasteful for an RL loop.
-        if has_depth and "distance_to_image_plane" in out and hasattr(env.splat_renderer, "render_rgbd"):
+        # `--no-splat-depth` skips this entirely (saves the splat half of
+        # the per-frame VRAM cost) and writes raytraced-only depth.
+        if (
+            not args_cli.no_splat_depth
+            and has_depth
+            and "distance_to_image_plane" in out
+            and hasattr(env.splat_renderer, "render_rgbd")
+        ):
             cam_pos = base_cam.data.pos_w[0].detach().cpu().numpy()
             cam_quat = base_cam.data.quat_w_world[0]
             cam_rot = math_utils.matrix_from_quat(cam_quat).detach().cpu().numpy()
@@ -309,6 +327,11 @@ def main():
 
         if i % 20 == 0:
             print(f"[orbit] {i}/{T} eye={eye.round(3).tolist()}")
+
+        # Splat tile-intersection allocates per-frame; on a tight 24 GB card
+        # shared with other procs, fragmentation builds up fast.
+        if torch.cuda.is_available() and (i % 8) == 0:
+            torch.cuda.empty_cache()
 
     print(f"Saved {T} frames to {save_dir}/{{rgb,depth,normals}}")
     env.close()

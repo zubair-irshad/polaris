@@ -55,6 +55,34 @@ class FixedCamera(Camera):
         )
 
 
+def _cam_resolution() -> tuple[int, int]:
+    """Camera (width, height) used for every CameraCfg in this file.
+
+    Override via ``POLARIS_CAM_WIDTH`` / ``POLARIS_CAM_HEIGHT`` env vars to
+    cut GPU memory (gsplat tile-intersection scales with pixel count, and
+    IsaacSim renders a per-camera buffer per data type). Common shrinks:
+    640x360 (1/4 px), 320x180 (1/16 px). Aspect is preserved by default.
+    """
+    w = int(os.environ.get("POLARIS_CAM_WIDTH", "1280"))
+    h = int(os.environ.get("POLARIS_CAM_HEIGHT", "720"))
+    return w, h
+
+
+def _cam_data_types() -> list:
+    """Camera data_types, with depth/normals togglable via env vars.
+
+    Both are on by default. Set ``POLARIS_CAM_DEPTH=0`` to drop
+    ``distance_to_image_plane`` and ``POLARIS_CAM_NORMALS=0`` to drop
+    ``normals`` — each saves a per-camera GPU buffer in IsaacSim.
+    """
+    types = ["rgb", "semantic_segmentation"]
+    if os.environ.get("POLARIS_CAM_DEPTH", "1") not in ("0", "false", "False"):
+        types.append("distance_to_image_plane")
+    if os.environ.get("POLARIS_CAM_NORMALS", "1") not in ("0", "false", "False"):
+        types.append("normals")
+    return types
+
+
 def _make_dome_light_spawn():
     """Build the ambient dome light spawn cfg.
 
@@ -92,9 +120,9 @@ class SceneCfg(InteractiveSceneCfg):
     wrist_cam = CameraCfg(
         class_type=FixedCamera,
         prim_path="{ENV_REGEX_NS}/robot/Gripper/Robotiq_2F_85/base_link/wrist_cam",
-        height=720,
-        width=1280,
-        data_types=["rgb", "semantic_segmentation", "distance_to_image_plane", "normals"],
+        width=_cam_resolution()[0],
+        height=_cam_resolution()[1],
+        data_types=_cam_data_types(),
         colorize_semantic_segmentation=False,
         update_latest_camera_pose=True,
         spawn=sim_utils.PinholeCameraCfg(
@@ -181,14 +209,9 @@ class SceneCfg(InteractiveSceneCfg):
                 )
                 asset = CameraCfg(
                     prim_path=f"{{ENV_REGEX_NS}}/scene/{name}",
-                    height=720,
-                    width=1280,
-                    data_types=[
-                        "rgb",
-                        "semantic_segmentation",
-                        "distance_to_image_plane",
-                        "normals",
-                    ],
+                    width=_cam_resolution()[0],
+                    height=_cam_resolution()[1],
+                    data_types=_cam_data_types(),
                     colorize_semantic_segmentation=False,
                     update_latest_camera_pose=True,
                     spawn=None,
@@ -217,14 +240,9 @@ class SceneCfg(InteractiveSceneCfg):
         if not hasattr(self, "external_cam"):
             self.external_cam = CameraCfg(
                 prim_path="{ENV_REGEX_NS}/scene/external_cam",
-                height=720,
-                width=1280,
-                data_types=[
-                    "rgb",
-                    "semantic_segmentation",
-                    "distance_to_image_plane",
-                    "normals",
-                ],
+                width=_cam_resolution()[0],
+                height=_cam_resolution()[1],
+                data_types=_cam_data_types(),
                 colorize_semantic_segmentation=False,
                 update_latest_camera_pose=True,
                 spawn=sim_utils.PinholeCameraCfg(
