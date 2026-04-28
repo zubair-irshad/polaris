@@ -125,9 +125,38 @@ def render(
 # `polaris.splat_renderer.SplatRenderer` instead.
 # ---------------------------------------------------------------------------
 import numpy as np
+from plyfile import PlyData
+from torch import nn
 
 import polaris.utils as utils
 from polaris.splat_renderer.scene.cameras import Camera
+
+
+def _load_full_scales(ply_path: str, device) -> nn.Parameter:
+    """Read scale_0/1[/2] from a PLY without upstream's [:2] truncation.
+
+    - 3DGS PLY (scale_0/1/2)        -> [N, 3] log-scales as authored.
+    - 2DGS surfel PLY (scale_0/1)   -> [N, 3] with the third axis padded to
+                                       a very negative log-scale (~exp(-20)
+                                       ≈ 2e-9) so the Gaussian renders as a
+                                       flat disk under gsplat's 3D rasterizer.
+    """
+    ply = PlyData.read(ply_path)
+    props = ply.elements[0]
+    available = sorted(
+        [p.name for p in props.properties if p.name.startswith("scale_")],
+        key=lambda x: int(x.split("_")[-1]),
+    )
+    cols = [np.asarray(props[a], dtype=np.float32) for a in available]
+    if len(cols) == 0:
+        raise ValueError(f"{ply_path}: no scale_* properties in PLY")
+    if len(cols) < 3:
+        # 2DGS surfel — pad missing axes with a very negative log-scale.
+        pad = np.full_like(cols[0], -20.0, dtype=np.float32)
+        cols = cols + [pad] * (3 - len(cols))
+    scales = np.stack(cols[:3], axis=-1)
+    t = torch.from_numpy(scales).to(device)
+    return nn.Parameter(t.requires_grad_(True))
 
 
 class _DummyPipe:
@@ -183,16 +212,15 @@ class SplatRenderer:
         self._snapshot_original()
 
     def _append_one(self, name, ply_path):
+        # NB: upstream GaussianModel.load_ply truncates scales to [:2] for the
+        # surfel rasterizer, which would lose the z-axis on 3DGS PLYs. So we
+        # call load_ply for everything *except* `_scaling`, then overwrite
+        # `_scaling` with all available scale dims read directly from the PLY.
+        # Real 2DGS PLYs (only scale_0 / scale_1) are padded with a tiny z so
+        # gsplat renders them as flat disks (visually equivalent to surfel).
         m = GaussianModel(3)
         m.load_ply(str(ply_path))
-        # Reject 2DGS surfel PLYs (only 2 scale dims) — gsplat backend
-        # requires full 3D anisotropic Gaussians.
-        if m._scaling.shape[-1] != 3:
-            raise ValueError(
-                f"{ply_path}: gsplat SplatRenderer requires 3DGS PLYs "
-                f"(scale dim 3); got dim {m._scaling.shape[-1]}. Use the "
-                f"legacy `polaris.splat_renderer.SplatRenderer` for 2DGS."
-            )
+        m._scaling = _load_full_scales(str(ply_path), self.device)
         cur = self.big_model._xyz.shape[0]
         self.splat_mapping[name] = (cur, cur + m._xyz.shape[0])
         for a in ("_xyz", "_rotation", "_opacity", "_features_rest", "_features_dc", "_scaling"):
