@@ -23,12 +23,16 @@ def _select_splat_renderer_cls():
                                 (default; matches Marble + SAM3D PLYs).
     """
     backend = os.environ.get("POLARIS_RENDERER", "gsplat").lower()
+    print(f"[polaris] selecting renderer backend: {backend}", flush=True)
     if backend in ("gsplat", "3dgs"):
+        print("[polaris] importing gsplat renderer", flush=True)
         from polaris.splat_renderer.gsplat_renderer import SplatRenderer
     elif backend in ("surfel", "2dgs"):
+        print("[polaris] importing surfel renderer", flush=True)
         from polaris.splat_renderer import SplatRenderer  # legacy
     else:
         raise ValueError(f"Unknown POLARIS_RENDERER: {backend!r}")
+    print(f"[polaris] imported renderer backend: {backend}", flush=True)
     return SplatRenderer
 
 
@@ -173,11 +177,17 @@ class ManagerBasedRLSplatEnv(ManagerBasedRLEnv):
         splats = {}
         self.views = {}
         stage = get_current_stage()
+        use_object_splats = os.environ.get("POLARIS_OBJECT_SPLATS", "1") not in (
+            "0",
+            "false",
+            "False",
+        )
 
         # Allocate splats for all rigid objects in the scene and raytrace semantic tags
         for name in self.scene.rigid_objects:
             path = Path(self.usd_file).parent / "assets" / name / "splat.ply"
-            if path.exists():
+            if use_object_splats and path.exists():
+                print(f"[polaris] queue object splat: {name} <- {path}", flush=True)
                 splats[name] = path
             else:
                 # apply semantic tags
@@ -211,8 +221,11 @@ class ManagerBasedRLSplatEnv(ManagerBasedRLEnv):
                 "fovx": fovx,
                 "fovy": fovy,
             }
+        print(f"[polaris] constructing splat renderer with {len(splats)} splats", flush=True)
         self.splat_renderer = _select_splat_renderer_cls()(splats=splats, device=self.device)
+        print("[polaris] constructed splat renderer", flush=True)
         self.splat_renderer.init_cameras(camera_cfg)
+        print(f"[polaris] initialized {len(camera_cfg)} splat cameras", flush=True)
 
     def setup_splat_robot(self):
         # Allocate robot splats and views on robot links to track

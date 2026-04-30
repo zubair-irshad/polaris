@@ -20,6 +20,7 @@ from __future__ import annotations
 import math
 from pathlib import Path
 from typing import Iterable
+import time
 
 import numpy as np
 import torch
@@ -43,8 +44,15 @@ def load_gaussian_ply(ply_path: str | Path, device) -> dict:
     Returns a dict with keys: means [N,3], quats [N,4], scales [N,3] (post-exp),
     opacities [N] (post-sigmoid), colors [N,3] (RGB in [0,1] from f_dc).
     """
+    print(f"[gsplat-renderer] reading {ply_path}", flush=True)
+    t0 = time.perf_counter()
     ply = PlyData.read(str(ply_path))
     v = ply["vertex"]
+    print(
+        f"[gsplat-renderer] parsed {ply_path} "
+        f"({len(v):,} gaussians) in {time.perf_counter() - t0:.2f}s",
+        flush=True,
+    )
 
     xyz = np.stack([v["x"], v["y"], v["z"]], axis=-1).astype(np.float32)
 
@@ -76,13 +84,16 @@ def load_gaussian_ply(ply_path: str | Path, device) -> dict:
     colors = np.clip(0.5 + SH_C0 * f_dc, 0.0, 1.0)
 
     dev = torch.device(device) if not isinstance(device, torch.device) else device
-    return {
+    print(f"[gsplat-renderer] uploading {ply_path} to {dev}", flush=True)
+    out = {
         "means":     torch.from_numpy(xyz).to(dev),
         "quats":     torch.from_numpy(quats).to(dev),
         "scales":    torch.from_numpy(scales).to(dev),
         "opacities": torch.from_numpy(opacities).to(dev),
         "colors":    torch.from_numpy(colors).to(dev),
     }
+    print(f"[gsplat-renderer] uploaded {ply_path}", flush=True)
+    return out
 
 
 # ---------------------------------------------------------------------------
