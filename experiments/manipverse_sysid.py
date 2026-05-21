@@ -58,7 +58,11 @@ parser.add_argument("--rebuild-each", action="store_true", default=False,
                     help="Rebuild env per eval instead of patching gains "
                          "in-place. Slower but more bullet-proof.")
 args_cli, _ = parser.parse_known_args()
-args_cli.enable_cameras = False  # sysid doesn't need rendering
+# Cameras have to be enabled because the DROID-ManipVerse env always spawns
+# wrist + external cameras (IsaacLab refuses to start a stage that contains
+# a Camera prim without --enable_cameras). We still skip the gsplat render
+# at step() time by passing expensive=False below.
+args_cli.enable_cameras = True
 args_cli.headless = True
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app

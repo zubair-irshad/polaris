@@ -39,6 +39,7 @@ Outputs:
 import argparse
 import json
 import pickle
+import sys
 from pathlib import Path
 
 import imageio.v2 as imageio_v2
@@ -67,6 +68,13 @@ parser.add_argument("--start-from-recorded-q", action="store_true",
                          "control gap doesn't dominate the rollout.")
 parser.add_argument("--no-pngs", dest="save_pngs", action="store_false")
 parser.set_defaults(save_pngs=True)
+parser.add_argument("--pd-params", default=None,
+                    help="Path to tuned_pd_params.json (from stage 12). If "
+                         "present, the env's actuator stiffness/damping is "
+                         "overridden with these per-joint values before "
+                         "rollout starts. Default: "
+                         "<env.usd_file>.parent / tuned_pd_params.json if "
+                         "it exists, otherwise leave env cfg untouched.")
 args_cli, _ = parser.parse_known_args()
 args_cli.enable_cameras = True
 args_cli.headless = True
@@ -161,6 +169,38 @@ def _read_arm_q(env: ManagerBasedRLSplatEnv) -> np.ndarray:
     return robot.data.joint_pos[0, idx].detach().cpu().numpy()
 
 
+def _resolve_pd_params_path(env_usd_file: str, override: str | None) -> Path | None:
+    if override:
+        p = Path(override).expanduser().resolve()
+        return p if p.exists() else None
+    p = Path(env_usd_file).parent / "tuned_pd_params.json"
+    return p if p.exists() else None
+
+
+def _apply_pd_overrides(env: "ManagerBasedRLSplatEnv", pd_path: Path) -> None:
+    """Mutate the Franka articulation's actuator stiffness/damping tensors
+    in-place from a stage-12 tuned_pd_params.json."""
+    with open(pd_path) as f:
+        pd = json.load(f)
+    K = np.asarray(pd["stiffness"], dtype=np.float64)
+    D = np.asarray(pd["damping"],   dtype=np.float64)
+    robot = env.scene["robot"]
+    joint_names = list(robot.data.joint_names)
+    k_full = robot.data.default_joint_stiffness[0].detach().clone()
+    d_full = robot.data.default_joint_damping[0].detach().clone()
+    for i, name in enumerate(PANDA_JOINT_NAMES):
+        j = joint_names.index(name)
+        k_full[j] = float(K[i])
+        d_full[j] = float(D[i])
+    for actuator in robot.actuators.values():
+        idx = actuator.joint_indices
+        actuator.stiffness[:] = k_full[idx].unsqueeze(0).to(actuator.stiffness)
+        actuator.damping[:]   = d_full[idx].unsqueeze(0).to(actuator.damping)
+    print(f"[droid_replay] applied tuned PD gains from {pd_path}")
+    print(f"               K = {K.tolist()}")
+    print(f"               D = {D.tolist()}")
+
+
 def _snap_arm_to(env: ManagerBasedRLSplatEnv, q: np.ndarray) -> None:
     """Force the articulation to a given joint state. Used to neutralise
     the start-of-episode control gap so the first few frames aren't a
@@ -224,6 +264,17 @@ def main():
     print(f"[droid_replay] {n_steps} steps, dt≈{rep.get('dt', 1/15):.4f}s")
 
     env.reset(object_positions=ic)
+
+    # PD overrides — picked up automatically from
+    # <env.usd_file>.parent / tuned_pd_params.json if stage 12 has been
+    # run + the file copied across (register_polaris_env.py --with-tuned-pd).
+    pd_path = _resolve_pd_params_path(env.usd_file, args_cli.pd_params)
+    if pd_path is not None:
+        _apply_pd_overrides(env, pd_path)
+    else:
+        print(f"[droid_replay] no tuned_pd_params.json found — using default "
+              f"PolaRiS PD gains (run stage 12 to tune).")
+
     if args_cli.start_from_recorded_q:
         _snap_arm_to(env, qs[0])
         print(f"[droid_replay] snapped Franka to recorded q[0]")
