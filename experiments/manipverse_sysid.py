@@ -53,7 +53,15 @@ parser.add_argument("--sigma", type=float, default=0.5)
 parser.add_argument("--maxiter", type=int, default=30)
 parser.add_argument("--popsize", type=int, default=0)
 parser.add_argument("--warmup", type=int, default=5)
-parser.add_argument("--rollout-steps", type=int, default=0)
+parser.add_argument("--rollout-steps", type=int, default=0,
+                    help="Truncate the replay trajectory to N steps when "
+                         "scoring each CMA sample. 0 = full episode "
+                         "(slow). 150–300 is usually enough to capture "
+                         "PD tracking dynamics.")
+parser.add_argument("--linear-space", action="store_true", default=False,
+                    help="Optimise raw gains instead of log-gains. "
+                         "Log-space is default because one sigma then "
+                         "covers both K (~10²) and D (~10¹).")
 parser.add_argument("--rebuild-each", action="store_true", default=False,
                     help="Rebuild env per eval instead of patching gains "
                          "in-place. Slower but more bullet-proof.")
@@ -243,22 +251,29 @@ def main():
                   f"D={np.round(params.damping, 1).tolist()}")
         return loss
 
-    print(f"[sysid] starting CMA-ES  sigma={args_cli.sigma}  maxiter={args_cli.maxiter}")
+    log_space = not args_cli.linear_space
+    print(f"[sysid] starting CMA-ES  sigma={args_cli.sigma}  "
+          f"maxiter={args_cli.maxiter}  log_space={log_space}")
     result = system_identification(
         replay_fn, x0=x0,
         sigma=args_cli.sigma,
         maxiter=args_cli.maxiter,
         popsize=(args_cli.popsize or None),
+        log_space=log_space,
     )
 
     # Re-score the best params with the warmup-trimmed loss + record the
     # baseline (x0) loss for context. Useful to know if sysid actually
     # improved things.
-    best = PDParams.from_vector(np.concatenate([result["stiffness"],
-                                                 result["damping"]]))
+    # result["stiffness"]/["damping"] are already decoded (raw gains), so
+    # rebuild PDParams in linear space irrespective of the CMA-ES setting.
+    best = PDParams.from_vector(
+        np.concatenate([result["stiffness"], result["damping"]]),
+        log_space=False,
+    )
     best_loss, _ = _rollout_and_score(env, best, real_q, grip_b, ic,
                                        warmup=args_cli.warmup, n_steps=n_steps)
-    baseline = PDParams.from_vector(x0)
+    baseline = PDParams.from_vector(x0, log_space=False)
     baseline_loss, _ = _rollout_and_score(env, baseline, real_q, grip_b, ic,
                                            warmup=args_cli.warmup,
                                            n_steps=n_steps)
