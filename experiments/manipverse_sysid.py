@@ -213,6 +213,9 @@ def main():
 
     env_cfg = parse_env_cfg(args_cli.env_id, device="cuda",
                              num_envs=1, use_fabric=True)
+    # Lift the 30s default time-out — sysid only runs ``rollout_steps`` per
+    # sample, but we still need the env to *not* terminate before that.
+    env_cfg.episode_length_s = 240.0
     env: ManagerBasedRLSplatEnv = gym.make(args_cli.env_id, cfg=env_cfg)  # type: ignore
 
     try:

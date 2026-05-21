@@ -68,6 +68,11 @@ parser.add_argument("--start-from-recorded-q", action="store_true",
                          "control gap doesn't dominate the rollout.")
 parser.add_argument("--no-pngs", dest="save_pngs", action="store_false")
 parser.set_defaults(save_pngs=True)
+parser.add_argument("--episode-length-s", type=float, default=180.0,
+                    help="Override env_cfg.episode_length_s. Default 180s "
+                         "comfortably covers a 60s DROID episode. The "
+                         "polaris droid_cfg's own default is 30s which "
+                         "truncates most DROID episodes mid-pick.")
 parser.add_argument("--pd-params", default=None,
                     help="Path to tuned_pd_params.json (from stage 12). If "
                          "present, the env's actuator stiffness/damping is "
@@ -239,6 +244,15 @@ def main():
 
     env_cfg = parse_env_cfg(args_cli.env_id, device="cuda",
                              num_envs=1, use_fabric=True)
+
+    # The DROID-ManipVerse env defaults to episode_length_s=30, which at
+    # 15 Hz caps every rollout at 450 steps. Real DROID episodes are
+    # commonly 60–90 s. Stretch the budget so polaris's time_out
+    # termination doesn't decapitate the replay halfway through.
+    env_cfg.episode_length_s = float(args_cli.episode_length_s)
+    print(f"[droid_replay] episode_length_s -> {env_cfg.episode_length_s:.1f}s "
+          f"(default in droid_cfg is 30s)")
+
     env: ManagerBasedRLSplatEnv = gym.make(args_cli.env_id, cfg=env_cfg)  # type: ignore
 
     try:
