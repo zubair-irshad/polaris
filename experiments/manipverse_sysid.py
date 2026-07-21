@@ -30,6 +30,7 @@ back to (A).
 
 import argparse
 import json
+import os
 import pickle
 from pathlib import Path
 
@@ -65,7 +66,27 @@ parser.add_argument("--linear-space", action="store_true", default=False,
 parser.add_argument("--rebuild-each", action="store_true", default=False,
                     help="Rebuild env per eval instead of patching gains "
                          "in-place. Slower but more bullet-proof.")
+parser.add_argument(
+    "--gpu",
+    default=None,
+    help="Physical GPU index to pin the process to (sim + torch + gsplat). "
+         "Defaults to CUDA_VISIBLE_DEVICES if set, else '0'. Pinning to one "
+         "device avoids the multi-GPU cuda:0/cuda:N termination-manager crash.",
+)
 args_cli, _ = parser.parse_known_args()
+
+# Pin to a single visible GPU BEFORE AppLauncher launches IsaacSim, so Kit /
+# PhysX, torch, and gsplat all agree on one device (collapses to cuda:0).
+if args_cli.gpu is not None:
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(args_cli.gpu)
+elif not os.environ.get("CUDA_VISIBLE_DEVICES"):
+    os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+print(
+    f"[manipverse] CUDA_VISIBLE_DEVICES={os.environ['CUDA_VISIBLE_DEVICES']} "
+    "(process pinned to a single GPU -> sim device cuda:0)",
+    flush=True,
+)
+
 # Cameras have to be enabled because the DROID-ManipVerse env always spawns
 # wrist + external cameras (IsaacLab refuses to start a stage that contains
 # a Camera prim without --enable_cameras). We still skip the gsplat render
@@ -211,7 +232,7 @@ def main():
     D0 = _parse_csv(args_cli.x0_damping,   7)
     x0 = np.concatenate([K0, D0])
 
-    env_cfg = parse_env_cfg(args_cli.env_id, device="cuda",
+    env_cfg = parse_env_cfg(args_cli.env_id, device="cuda:0",
                              num_envs=1, use_fabric=True)
     # Lift the 30s default time-out — sysid only runs ``rollout_steps`` per
     # sample, but we still need the env to *not* terminate before that.

@@ -146,6 +146,57 @@ gym.register(
     },
 )
 
+gym.register(
+    id="DROID-ManipVerse-Scene5",
+    entry_point=ManagerBasedRLSplatEnv,
+    disable_env_checker=True,
+    order_enforce=False,
+    kwargs={
+        "env_cfg_entry_point": DroidCfg,
+        "usd_file": str(DATA_PATH / "droid_manipverse_scene5/scene.usda"),
+        "rubric": Rubric(
+            criteria=[
+                checkers.reach("white_paper_plate__0", threshold=0.2),
+                (checkers.lift("white_paper_plate__0", threshold=0.04), [0]),
+            ]
+        ),
+    },
+)
+
+gym.register(                                                                                                                                                                       
+    id="DROID-ManipVerse-Scene13",                                                                                                                                                  
+    entry_point=ManagerBasedRLSplatEnv,                                                                                                                                             
+    disable_env_checker=True,                                                                                                                                                       
+    order_enforce=False,                                                                                                                                                            
+    kwargs={                                                                                                                                                                        
+        "env_cfg_entry_point": DroidCfg,                                                                                                                                            
+        "usd_file": str(DATA_PATH / "droid_manipverse_scene13/scene.usda"),                                                                                                         
+        "rubric": Rubric(                                                                                                                                                           
+            criteria=[                                                                                                                                                              
+                checkers.reach("green_snack_packet", threshold=0.2),                                                                                                                
+                (checkers.lift("green_snack_packet", threshold=0.04), [0]),                                                                                                         
+            ]                                                                                                                                                                       
+        ),                                                                                                                                                                          
+    },                                                                                                                                                                              
+)        
+
+gym.register(
+    id="DROID-ManipVerse-Scene1",
+    entry_point=ManagerBasedRLSplatEnv,
+    disable_env_checker=True,
+    order_enforce=False,
+    kwargs={
+        "env_cfg_entry_point": DroidCfg,
+        "usd_file": str(DATA_PATH / "droid_manipverse_scene1/scene.usda"),
+        "rubric": Rubric(
+            criteria=[
+                checkers.reach("yellow_patterned_mug", threshold=0.2),
+                (checkers.lift("yellow_patterned_mug", threshold=0.04), [0]),
+            ]
+        ),
+    },
+)
+
 
 gym.register(
     id="DROID-TapeIntoContainer",
@@ -160,6 +211,24 @@ gym.register(
                 checkers.reach("tape_00", threshold=0.2),
                 (checkers.lift("tape_00", threshold=0.04), [0]),
                 (checkers.is_within_xy("tape_00", "container_02", percent_threshold=0.8), [1]),
+            ]
+        ),
+    },
+)
+
+
+gym.register(
+    id="DROID-ManipVerse-TriData1",
+    entry_point=ManagerBasedRLSplatEnv,
+    disable_env_checker=True,
+    order_enforce=False,
+    kwargs={
+        "env_cfg_entry_point": DroidCfg,
+        "usd_file": str(DATA_PATH / "droid_manipverse_tridata1/scene.usda"),
+        "rubric": Rubric(
+            criteria=[
+                checkers.reach("red_apple", threshold=0.2),
+                (checkers.lift("red_apple", threshold=0.04), [0]),
             ]
         ),
     },

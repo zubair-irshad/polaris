@@ -2,8 +2,14 @@
 
 Drives an external camera around a target point, saving compositied RGB
 (splat BG + raytraced robot), per-frame metric depth, and surface normals.
-Robot stays in its default reset pose — no env stepping happens, so this
-is purely a camera flythrough.
+No physics is ever stepped — it's a pure camera flythrough of a static scene.
+
+Objects are reset to the scene's eval initial conditions (same as
+``manipverse_random_action.py``); they are authored kinematic, so they hold
+those poses with no settling. The Franka is posed at the episode's first
+recorded joint config (``episode.pkl['traj']['joint_positions'][0]``) rather
+than the upright default reset pose; pass ``--no-robot-pose`` to keep the
+default, or ``--traj`` to point at a specific episode/trajectory pickle.
 
 Companion to ``manipverse_random_action.py`` (same env, different driver).
 
@@ -33,6 +39,8 @@ Outputs (under --save-dir):
 
 import argparse
 import os
+import pickle
+from pathlib import Path
 
 import imageio.v3 as iio
 import numpy as np
@@ -73,7 +81,43 @@ parser.add_argument(
     default="z",
     help="World up axis (IsaacSim defaults to +Z).",
 )
+parser.add_argument(
+    "--traj",
+    default=None,
+    help="Episode pickle holding the recorded joint stream used to pose the "
+         "Franka (episode.pkl with ['traj']['joint_positions'], or a "
+         "droid_trajectory.pkl with ['joint_positions']). Defaults to "
+         "<env.usd_file>.parent/episode.pkl.",
+)
+parser.add_argument(
+    "--no-robot-pose",
+    dest="pose_robot",
+    action="store_false",
+    help="Skip snapping the Franka to the episode's initial joints; leave it "
+         "at the default upright reset pose.",
+)
+parser.set_defaults(pose_robot=True)
+parser.add_argument(
+    "--gpu",
+    default=None,
+    help="Physical GPU index to pin the process to (sim + torch + gsplat). "
+         "Defaults to CUDA_VISIBLE_DEVICES if set, else '0'. Pinning to one "
+         "device avoids the multi-GPU cuda:0/cuda:N termination-manager crash.",
+)
 args_cli, _ = parser.parse_known_args()
+
+# Pin to a single visible GPU BEFORE AppLauncher launches IsaacSim, so Kit /
+# PhysX, torch, and gsplat all agree on one device (collapses to cuda:0).
+if args_cli.gpu is not None:
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(args_cli.gpu)
+elif not os.environ.get("CUDA_VISIBLE_DEVICES"):
+    os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+print(
+    f"[manipverse] CUDA_VISIBLE_DEVICES={os.environ['CUDA_VISIBLE_DEVICES']} "
+    "(process pinned to a single GPU -> sim device cuda:0)",
+    flush=True,
+)
+
 args_cli.enable_cameras = True
 args_cli.headless = True
 app_launcher = AppLauncher(args_cli)
@@ -88,6 +132,52 @@ from isaaclab_tasks.utils import parse_env_cfg  # noqa: E402
 from polaris.environments.manager_based_rl_splat_environment import (  # noqa: E402
     ManagerBasedRLSplatEnv,
 )
+from polaris.utils import load_eval_initial_conditions  # noqa: E402
+
+
+PANDA_JOINT_NAMES = [f"panda_joint{i}" for i in range(1, 8)]
+
+
+def _resolve_traj_path(env_usd_file, override):
+    if override:
+        return Path(override).expanduser().resolve()
+    return Path(env_usd_file).parent / "episode.pkl"
+
+
+def _load_initial_arm_q(path: Path) -> np.ndarray:
+    """Return the episode's first recorded 7-DOF arm joint vector.
+
+    Accepts either an episode.pkl (joints under ``["traj"]["joint_positions"]``)
+    or a droid_trajectory.pkl (``["joint_positions"]``).
+    """
+    with open(path, "rb") as f:
+        d = pickle.load(f)
+    if isinstance(d, dict) and "traj" in d and "joint_positions" in d["traj"]:
+        qs = np.asarray(d["traj"]["joint_positions"], dtype=np.float64)
+    elif isinstance(d, dict) and "joint_positions" in d:
+        qs = np.asarray(d["joint_positions"], dtype=np.float64)
+    else:
+        raise KeyError(f"no joint_positions found in {path}")
+    return qs[0]
+
+
+def _snap_arm_to(env, q: np.ndarray) -> None:
+    """Teleport the Franka's 7 arm joints to ``q`` (zero velocity).
+
+    NOTE: orbit never steps physics, so this teleport is *not* driven back to
+    the cfg default pose by the PD targets (a single sim.step would do exactly
+    that, which is why orbit only renders, never steps).
+    """
+    robot = env.scene["robot"]
+    names = list(robot.data.joint_names)
+    idx = [names.index(n) for n in PANDA_JOINT_NAMES]
+    full_q = robot.data.joint_pos[0].detach().clone()
+    full_q[idx] = torch.as_tensor(q, dtype=full_q.dtype, device=full_q.device)
+    zero_v = torch.zeros_like(full_q)
+    robot.write_joint_state_to_sim(
+        full_q.unsqueeze(0), zero_v.unsqueeze(0),
+        env_ids=torch.tensor([0], device=full_q.device),
+    )
 
 
 def look_at_quat_opengl(eye, target, up):
@@ -213,13 +303,50 @@ def main():
 
     env_cfg = parse_env_cfg(
         args_cli.env_id,
-        device="cuda",
+        device="cuda:0",  # concrete index; process is pinned to one GPU above
         num_envs=1,
         use_fabric=True,
     )
     env: ManagerBasedRLSplatEnv = gym.make(args_cli.env_id, cfg=env_cfg)  # type: ignore
 
-    obs, info = env.reset(object_positions={})
+    # Match manipverse_random_action exactly: reset objects to the scene's eval
+    # initial conditions. The objects are authored kinematic (see scene.usda:
+    # physics:kinematicEnabled = 1), so they hold these poses regardless of
+    # physics — there is nothing to "settle". random_action looks correct only
+    # because it views from the original (forgiving) external-cam angle; the
+    # residual base/table blending seen from grazing orbit angles is splat-on-
+    # splat compositing, not a pose we can fix here.
+    ic = {}
+    try:
+        language_instruction, initial_conditions = load_eval_initial_conditions(
+            env.usd_file
+        )
+        print("Language instruction:", language_instruction)
+        ic = initial_conditions[0]
+    except Exception as e:
+        print(f"[orbit] no eval initial conditions found ({e}); using defaults")
+        ic = {}
+
+    obs, info = env.reset(object_positions=ic)
+
+    # Pose the Franka at the episode's first recorded joint config instead of
+    # the upright default reset pose. Teleport only (write_joint_state_to_sim);
+    # we must NOT step physics afterwards or the actuator PD targets (still the
+    # cfg default pose) would immediately drag the arm back off q[0].
+    if args_cli.pose_robot:
+        traj_path = _resolve_traj_path(env.usd_file, args_cli.traj)
+        try:
+            q0 = _load_initial_arm_q(traj_path)
+            _snap_arm_to(env, q0)
+            env.sim.render()
+            env.scene.update(0.0)
+            print(f"[orbit] snapped Franka to episode q[0] from {traj_path}")
+        except (FileNotFoundError, KeyError) as e:
+            print(
+                f"[orbit] could not pose robot from {traj_path} ({e}); "
+                "leaving it at the default reset pose"
+            )
+
     print("Available scene sensors:", list(env.scene.sensors.keys()))
 
     cam_name = args_cli.external_cam

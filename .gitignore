@@ -211,3 +211,9 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# ManipVerse scratch / large local artifacts (do not commit)
+NVIDIA-Linux-*.run
+orbit_scene*/
+camera_frames_scene*/
+test_isaac.py

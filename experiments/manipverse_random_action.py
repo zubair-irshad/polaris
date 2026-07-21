@@ -11,7 +11,14 @@ Usage (on the SSH GPU box, after `uv sync`):
     export POLARIS_ROBOT_SPLAT=0          # synthetic USD robot
     export POLARIS_RENDERER=gsplat        # default; explicit for clarity
     python experiments/manipverse_random_action.py \
-        --save-dir camera_frames_droid_manipverse_scene0_gsplat
+        --save-dir camera_frames_droid_manipverse_scene0_gsplat \
+        --gpu 0                           # pin process to one physical GPU
+
+On a multi-GPU box, omit --gpu to inherit CUDA_VISIBLE_DEVICES, or pass an
+explicit index. Pinning is required: without it IsaacSim may put physics on
+one GPU while the index-less "cuda" string resolves torch/gsplat allocations
+to another, producing a "tensors on cuda:0 and cuda:N" RuntimeError in the
+termination manager.
 """
 
 import argparse
@@ -26,12 +33,12 @@ from isaaclab.app import AppLauncher
 parser = argparse.ArgumentParser()
 parser.add_argument(
     "--save-dir",
-    default="camera_frames_droid_manipverse_scene0_gsplat",
+    default="camera_frames_droid_manipverse_scene5_gsplat",
     help="Where to write per-step PNGs.",
 )
 parser.add_argument(
     "--external-cam",
-    default="cam__22008760",
+    default="cam_24400334",
     help="Name of the external camera in scene.sensors.",
 )
 parser.add_argument(
@@ -42,9 +49,34 @@ parser.add_argument(
 )
 parser.add_argument(
     "--env-id",
-    default="DROID-ManipVerse-Scene0",
+    default="DROID-ManipVerse-Scene5",
+)
+parser.add_argument(
+    "--gpu",
+    default=None,
+    help=(
+        "Physical GPU index to pin the whole process to (sim + torch + "
+        "gsplat). Defaults to CUDA_VISIBLE_DEVICES if already set, else '0'. "
+        "Pinning to a single device avoids the multi-GPU device-mismatch "
+        "(IsaacSim picks one GPU for physics while the index-less 'cuda' "
+        "string resolves torch/gsplat allocations to another)."
+    ),
 )
 args_cli, _ = parser.parse_known_args()
+
+# Pin to a single visible GPU BEFORE AppLauncher launches IsaacSim, so Kit /
+# PhysX, torch, and the gsplat renderer all agree on one device. Everything
+# then collapses to a stable "cuda:0", regardless of which physical GPU.
+if args_cli.gpu is not None:
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(args_cli.gpu)
+elif not os.environ.get("CUDA_VISIBLE_DEVICES"):
+    os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+print(
+    f"[manipverse] CUDA_VISIBLE_DEVICES={os.environ['CUDA_VISIBLE_DEVICES']} "
+    "(process pinned to a single GPU -> sim device cuda:0)",
+    flush=True,
+)
+
 args_cli.enable_cameras = True
 args_cli.headless = True
 app_launcher = AppLauncher(args_cli)
@@ -96,9 +128,12 @@ def main():
     save_dir = args_cli.save_dir
     os.makedirs(save_dir, exist_ok=True)
 
+    # Concrete index, not the bare "cuda" string: with the process pinned to a
+    # single visible GPU above, cuda:0 is the only device, so every IsaacLab
+    # buffer, the gsplat splats, and the actions all land on the same device.
     env_cfg = parse_env_cfg(
         args_cli.env_id,
-        device="cuda",
+        device="cuda:0",
         num_envs=1,
         use_fabric=True,
     )
@@ -135,7 +170,7 @@ def main():
         frame_id += 1
 
     for _ in range(args_cli.max_steps):
-        action = torch.tensor(env.action_space.sample(), device="cuda")
+        action = torch.tensor(env.action_space.sample(), device=env.unwrapped.device)
         obs, rew, term, trunc, info = env.step(action, expensive=True)
 
         combined = grab_combined(obs)

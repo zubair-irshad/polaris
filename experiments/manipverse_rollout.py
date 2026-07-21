@@ -96,7 +96,27 @@ parser.add_argument(
     help="Skip per-step PNG dumps; write only the per-pick MP4.",
 )
 parser.set_defaults(save_pngs=True)
+parser.add_argument(
+    "--gpu",
+    default=None,
+    help="Physical GPU index to pin the process to (sim + torch + gsplat). "
+         "Defaults to CUDA_VISIBLE_DEVICES if set, else '0'. Pinning to one "
+         "device avoids the multi-GPU cuda:0/cuda:N termination-manager crash.",
+)
 args_cli, _ = parser.parse_known_args()
+
+# Pin to a single visible GPU BEFORE AppLauncher launches IsaacSim, so Kit /
+# PhysX, torch, and gsplat all agree on one device (collapses to cuda:0).
+if args_cli.gpu is not None:
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(args_cli.gpu)
+elif not os.environ.get("CUDA_VISIBLE_DEVICES"):
+    os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+print(
+    f"[manipverse] CUDA_VISIBLE_DEVICES={os.environ['CUDA_VISIBLE_DEVICES']} "
+    "(process pinned to a single GPU -> sim device cuda:0)",
+    flush=True,
+)
+
 args_cli.enable_cameras = True
 args_cli.headless = True
 app_launcher = AppLauncher(args_cli)
@@ -298,7 +318,7 @@ def main():
 
     env_cfg = parse_env_cfg(
         args_cli.env_id,
-        device="cuda",
+        device="cuda:0",  # concrete index; process is pinned to one GPU above
         num_envs=1,
         use_fabric=True,
     )

@@ -6,7 +6,9 @@ import tqdm
 import gymnasium as gym
 import torch
 import argparse
+import numpy as np
 import pandas as pd
+from openpi_client import image_tools
 
 
 from pathlib import Path
@@ -41,6 +43,13 @@ def main(eval_args: EvalArgs):
         num_envs=1,
         use_fabric=True,
     )
+    # Optional episode-length override. max_episode_length (policy steps) is
+    # derived as episode_length_s / (sim.dt * decimation), so raising this is
+    # the only way to let a rollout run longer than the env default (30 s ->
+    # 450 steps). Must be set on env_cfg BEFORE gym.make.
+    if eval_args.episode_length_s is not None:
+        env_cfg.episode_length_s = float(eval_args.episode_length_s)
+        print(f" >>> episode_length_s override: {env_cfg.episode_length_s}s <<< ")
     env: MangerBasedRLSplatEnv = gym.make(eval_args.environment, cfg=env_cfg)  # type: ignore
 
     language_instruction, initial_conditions = load_eval_initial_conditions(
@@ -48,6 +57,12 @@ def main(eval_args: EvalArgs):
         initial_conditions_file=eval_args.initial_conditions_file,
         rollouts=eval_args.rollouts,
     )
+    # CLI override: `--instruction "..."` wins over the instruction baked into
+    # initial_conditions.json, so one env/USD can be evaluated on any prompt
+    # without editing the JSON.
+    if eval_args.instruction is not None:
+        language_instruction = eval_args.instruction
+    print(f" >>> language instruction: {language_instruction!r} <<< ")
     rollouts = len(initial_conditions)
     # Resume CSV logging
     run_folder = Path(eval_args.run_folder)
@@ -80,11 +95,38 @@ def main(eval_args: EvalArgs):
         object_positions=initial_conditions[episode % len(initial_conditions)]
     )
     policy_client.reset()
+
+    # Save EXACTLY what the policy ingests, for debugging. The DroidJointPos
+    # client reads obs["splat"]["external_cam"] -> right/exterior_image and
+    # obs["splat"]["wrist_cam"] -> wrist_image, each resize_with_pad'd to
+    # 224x224 before being sent to the pi0 server (see droid_jointpos_client).
+    # NOTE: obs has no "images" group and the cameras are named external_cam /
+    # wrist_cam (not left/right/wrist_camera), so reading obs["images"] would
+    # KeyError. We replicate the client's preprocessing so the saved feed is
+    # pixel-for-pixel the policy input. Low-res (224) + temporally downsampled
+    # via RGB_FEED_STRIDE to keep the file small.
+    rgb_feed_path = run_folder / f"episode_{episode}_policy_input.mp4"
+    rgb_feed = []
+
+    def _policy_input_frame(obs):
+        ext = image_tools.resize_with_pad(obs["splat"]["external_cam"], 224, 224)
+        wrist = image_tools.resize_with_pad(obs["splat"]["wrist_cam"], 224, 224)
+        return np.concatenate([ext, wrist], axis=1)  # [224, 448, 3], exterior | wrist
+
     print(f" >>> Starting eval job from episode {episode + 1} of {rollouts} <<< ")
     while True:
         action, viz = policy_client.infer(obs, language_instruction)
+        # `viz is not None` ONLY on chunk boundaries -- i.e. exactly the steps
+        # where the client queried the server and `expensive`/splat rendering
+        # was on, so obs["splat"] is the colored composite. On the in-between
+        # open-loop steps `expensive=False`, obs["splat"] is the cheap gray
+        # raw-mesh raster, and the policy never reads it. Gating the feed here
+        # keeps it to the true (all-colored) policy inputs, one per chunk --
+        # otherwise the mp4 flickers gray<->colored from the skipped renders.
         if viz is not None:
             video.append(viz)
+            rgb_feed.append(_policy_input_frame(obs))
+
         obs, rew, term, trunc, info = env.step(
             torch.tensor(action).reshape(1, -1), expensive=policy_client.rerender
         )
@@ -95,7 +137,13 @@ def main(eval_args: EvalArgs):
 
             # Save video and metadata
             filename = run_folder / f"episode_{episode}.mp4"
-            mediapy.write_video(filename, video, fps=15)
+            mediapy.write_video(filename, video, fps=eval_args.video_fps)
+
+            # Save the exact policy-input feed for debugging.
+            if rgb_feed:
+                mediapy.write_video(rgb_feed_path, rgb_feed, fps=eval_args.video_fps)
+                print(f" >>> saved policy-input feed: {rgb_feed_path} "
+                      f"({len(rgb_feed)} frames, one per policy query) <<< ")
 
             # Log episode results to CSV
             episode_data = {
@@ -108,7 +156,7 @@ def main(eval_args: EvalArgs):
                 [episode_df, pd.DataFrame([episode_data])], ignore_index=True
             )
             episode_df.to_csv(csv_path, index=False)
-
+        
             bar.close()
             print(f"Episode {episode} finished. Episode length: {bar.n}")
             bar = tqdm.tqdm(range(horizon))
@@ -118,6 +166,9 @@ def main(eval_args: EvalArgs):
 
             episode += 1
             video = []
+            # Reset the policy-input feed for the next episode.
+            rgb_feed_path = run_folder / f"episode_{episode}_policy_input.mp4"
+            rgb_feed = []
             if episode >= rollouts:
                 break
 

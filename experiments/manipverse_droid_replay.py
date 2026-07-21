@@ -38,6 +38,7 @@ Outputs:
 
 import argparse
 import json
+import os
 import pickle
 import sys
 from pathlib import Path
@@ -80,7 +81,27 @@ parser.add_argument("--pd-params", default=None,
                          "rollout starts. Default: "
                          "<env.usd_file>.parent / tuned_pd_params.json if "
                          "it exists, otherwise leave env cfg untouched.")
+parser.add_argument(
+    "--gpu",
+    default=None,
+    help="Physical GPU index to pin the process to (sim + torch + gsplat). "
+         "Defaults to CUDA_VISIBLE_DEVICES if set, else '0'. Pinning to one "
+         "device avoids the multi-GPU cuda:0/cuda:N termination-manager crash.",
+)
 args_cli, _ = parser.parse_known_args()
+
+# Pin to a single visible GPU BEFORE AppLauncher launches IsaacSim, so Kit /
+# PhysX, torch, and gsplat all agree on one device (collapses to cuda:0).
+if args_cli.gpu is not None:
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(args_cli.gpu)
+elif not os.environ.get("CUDA_VISIBLE_DEVICES"):
+    os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+print(
+    f"[manipverse] CUDA_VISIBLE_DEVICES={os.environ['CUDA_VISIBLE_DEVICES']} "
+    "(process pinned to a single GPU -> sim device cuda:0)",
+    flush=True,
+)
+
 args_cli.enable_cameras = True
 args_cli.headless = True
 app_launcher = AppLauncher(args_cli)
@@ -242,7 +263,7 @@ def main():
     save_dir = Path(args_cli.save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    env_cfg = parse_env_cfg(args_cli.env_id, device="cuda",
+    env_cfg = parse_env_cfg(args_cli.env_id, device="cuda:0",
                              num_envs=1, use_fabric=True)
 
     # The DROID-ManipVerse env defaults to episode_length_s=30, which at
