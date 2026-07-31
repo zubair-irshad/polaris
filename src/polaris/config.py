@@ -55,6 +55,9 @@ class EvalArgs:
     rollouts: int | None = None  # Number of rollouts to evaluate
     episode_length_s: float | None = None  # Override env episode length (s); None = env default (30)
     video_fps: float = 15.0  # Playback fps for saved MP4s (lower = slower/longer clip)
+    # Render the gsplat (3DGS) robot (default); pass --no-robot-splat to
+    # render the synthetic IsaacSim-raytraced USD robot instead.
+    robot_splat: bool = True
 
 
 @dataclass

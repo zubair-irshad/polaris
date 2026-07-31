@@ -98,6 +98,51 @@ uv run scripts/eval.py --environment DROID-FoodBussing --policy.port 8000 --run-
 ```
 Results include rollout videos, and a CSV summarizing success and normalized progress of each episode.
 
+#### Robot rendering: gsplat vs. synthetic
+
+`scripts/eval.py` takes `--robot-splat` / `--no-robot-splat` (default: on), which
+sets `POLARIS_ROBOT_SPLAT` before IsaacLab is imported so the choice is
+deterministic regardless of what the parent shell exported:
+
+- `--robot-splat` (default) — the robot is rendered as a Gaussian splat.
+- `--no-robot-splat` — the robot is raytraced by IsaacSim from its USD and
+  composited into the splat scene via the semantic mask in `custom_render()`.
+  Preferable on ManipVerse scenes, whose backgrounds/objects are 3DGS while the
+  splat-robot asset is still 2DGS.
+
+#### ManipVerse eval example
+
+Running a ManipVerse (real-to-sim DROID) scene with the **base** DROID jointpos
+π0.5 checkpoint rather than the PolaRiS-cotrained one. Server first:
+
+```bash
+cd third_party/openpi
+XLA_PYTHON_CLIENT_MEM_FRACTION=0.35 uv run scripts/serve_policy.py --port 8080 \
+    policy:checkpoint --policy.config pi05_droid_jointpos \
+    --policy.dir gs://openpi-assets/checkpoints/pi05_droid_jointpos
+```
+
+(`pi05_droid_jointpos` is the base-DROID counterpart of
+`pi05_droid_jointpos_polaris`; the ManipVerse repo carries a small openpi patch
+that registers it.)
+
+Then, from a new terminal at the repo root:
+
+```bash
+CUDA_VISIBLE_DEVICES=1 uv run scripts/eval.py --environment DROID-ManipVerse-TriData1 \
+  --policy.port 8080 --run-folder runs/droid_manipverse_tridata1_banana_synthetic \
+  --instruction "Pick up the banana and place it in the basket" \
+  --initial-conditions-file PolaRiS-Hub/droid_manipverse_tridata1/initial_conditions_eval.json \
+  --rollouts 20 --no-robot-splat
+```
+
+`initial_conditions_eval.json` holds N perturbed copies of the reconstructed
+scene pose (trial 0 is the exact reconstruction, the rest jitter object XY +
+yaw), so `--rollouts 20` measures a success *rate* instead of one lucky pose.
+The ManipVerse scene assets under `PolaRiS-Hub/` are produced by the
+[manipverse](https://github.com/TRI-ML/manipverse) pipeline and can also be
+downloaded prebuilt — see that repo's README.
+
 ### Off-the-shelf Evaluation Environments
 | Environment Name | Prompt | Image |
 | :--- | :--- | :--- | 

@@ -1,3 +1,5 @@
+import os
+
 import tyro
 import mediapy
 
@@ -18,6 +20,16 @@ from polaris.config import EvalArgs
 
 
 def main(eval_args: EvalArgs):
+    # Robot rendering: the env reads POLARIS_ROBOT_SPLAT at gym.make time. Set
+    # it explicitly (not just when unset) so the choice is deterministic even
+    # if the parent shell exported it. "1" = gsplat (3DGS) robot (default),
+    # "0" = synthetic IsaacSim-raytraced USD robot (--no-robot-splat).
+    os.environ["POLARIS_ROBOT_SPLAT"] = "1" if eval_args.robot_splat else "0"
+    print(
+        f" >>> robot rendering: "
+        f"{'gsplat (3DGS)' if eval_args.robot_splat else 'synthetic USD'} <<< "
+    )
+
     # This must be done before importing anything from IsaacLab
     # Inside main function to avoid launching IsaacLab in global scope
     # >>>> Isaac Sim App Launcher <<<<
