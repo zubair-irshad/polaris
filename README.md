@@ -118,13 +118,16 @@ Running a ManipVerse (real-to-sim DROID) scene with the **base** DROID jointpos
 ```bash
 cd third_party/openpi
 XLA_PYTHON_CLIENT_MEM_FRACTION=0.35 uv run scripts/serve_policy.py --port 8080 \
-    policy:checkpoint --policy.config pi05_droid_jointpos \
+    policy:checkpoint --policy.config pi05_droid_jointpos_polaris \
     --policy.dir gs://openpi-assets/checkpoints/pi05_droid_jointpos
 ```
 
-(`pi05_droid_jointpos` is the base-DROID counterpart of
-`pi05_droid_jointpos_polaris`; the ManipVerse repo carries a small openpi patch
-that registers it.)
+Note the config is still `pi05_droid_jointpos_polaris` while `--policy.dir`
+points at the **base** checkpoint — the two are independent. The config gives
+the architecture + transform stack; `--policy.dir` gives the weights, and
+`create_trained_policy` loads norm stats from `<checkpoint>/assets` rather than
+the config's `assets_dir`. The config's `assets_dir` / `weight_loader` / LR
+schedule are training-only, so no base-specific TrainConfig is needed.
 
 Then, from a new terminal at the repo root:
 
